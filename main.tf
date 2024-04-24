@@ -1,56 +1,58 @@
+# VPC creation
 resource "aws_vpc" "vpc_1" {
   enable_dns_hostnames = true
   enable_dns_support   = true
   cidr_block           = "10.0.0.0/17"
-
   tags = {
     Name = "vpc_1"
   }
 }
 
+# public subnet
 resource "aws_subnet" "public_subnet_1" {
   vpc_id                  = aws_vpc.vpc_1.id
   cidr_block              = "10.0.0.0/18"
   availability_zone       = "us-east-1a"
   map_public_ip_on_launch = true
-
   tags = {
     Name = "public_subnet_1"
   }
 }
 
+# private subnet
 resource "aws_subnet" "private_subnet_1" {
   vpc_id            = aws_vpc.vpc_1.id
   cidr_block        = "10.0.64.0/18"
   availability_zone = "us-east-1a"
-
   tags = {
     Name = "private_subnet_1"
   }
 }
 
+# EIP for NAT gateway 
 resource "aws_eip" "eip_nat_gtw_vpc_1" {
   domain = "vpc"
 }
 
+# NAT gateway 
 resource "aws_nat_gateway" "private_subnet_natgtw" {
-  subnet_id     = aws_subnet.public_subnet_1.id
   allocation_id = aws_eip.eip_nat_gtw_vpc_1.id
-
+  subnet_id     = aws_subnet.public_subnet_1.id
+  depends_on    = [aws_subnet.public_subnet_1]
   tags = {
     Name = "nat_gtw_public_subnet_vpc_1g h"
   }
-  depends_on = [aws_subnet.public_subnet_1]
 }
 
+# VPC internet gateway
 resource "aws_internet_gateway" "igw_vpc_1" {
   vpc_id = aws_vpc.vpc_1.id
-
   tags = {
     Name = "igw_vpc_1"
   }
 }
 
+# private subnet route table
 resource "aws_route_table" "private_rtb_vpc_1" {
   vpc_id = aws_vpc.vpc_1.id
   tags = {
@@ -58,17 +60,20 @@ resource "aws_route_table" "private_rtb_vpc_1" {
   }
 }
 
+# route of private sunet route table
 resource "aws_route" "nat_gtw_route" {
   route_table_id         = aws_route_table.private_rtb_vpc_1.id
-  nat_gateway_id         = aws_nat_gateway.private_subnet_natgtw.id
   destination_cidr_block = "0.0.0.0/0"
+  nat_gateway_id         = aws_nat_gateway.private_subnet_natgtw.id
 }
 
+# private subnet association with private route table
 resource "aws_route_table_association" "private_subnet_private_rtb_assoc" {
   route_table_id = aws_route_table.private_rtb_vpc_1.id
   subnet_id      = aws_subnet.private_subnet_1.id
 }
 
+# internet gateway route table
 resource "aws_route_table" "igw_rtb_vpc_1" {
   vpc_id = aws_vpc.vpc_1.id
 
