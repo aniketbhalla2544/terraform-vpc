@@ -1,50 +1,68 @@
-# availablity zones list
-variable "availability_zones" {
-  type    = list(string)
-  default = ["us-east-1a", "us-east-1b"]
+
+variable "create_instances" {
+  type        = bool
+  default     = false
+  description = "whether to create aws_intance type resources or not"
+}
+
+variable "create_nat_gtw" {
+  type        = bool
+  default     = false
+  description = "whether to create a NAT gateway in public subnet or not"
 }
 
 # VPC creation
 resource "aws_vpc" "vpc" {
   enable_dns_hostnames = true
   enable_dns_support   = true
-  cidr_block           = "10.0.0.0/17"
+  cidr_block           = "10.0.0.0/17" // 32,768 IPs
   tags = {
     Name = "vpc"
   }
 }
 
-# public subnet
-resource "aws_subnet" "public_subnet_1" {
+# availablity zones list
+variable "availability_zones" {
+  type        = list(string)
+  description = "availbility zones"
+  default     = ["us-east-1a", "us-east-1b"]
+}
+
+# 2 public subnets in each AZ
+resource "aws_subnet" "public_subnets" {
+  count                   = length(var.availability_zones)
+  availability_zone       = element(var.availability_zones, count.index)
+  cidr_block              = cidrsubnet(aws_vpc.vpc.cidr_block, 2, count.index)
   vpc_id                  = aws_vpc.vpc.id
-  cidr_block              = "10.0.0.0/18"
-  availability_zone       = "us-east-1a"
   map_public_ip_on_launch = true
   tags = {
-    Name = "public_subnet_1"
+    Name = "public_subnet_${count.index + 1}"
   }
 }
 
-# private subnet
-resource "aws_subnet" "private_subnet_1" {
+# 2 private subnets in each AZ
+resource "aws_subnet" "private_subnets" {
+  count             = length(var.availability_zones)
+  availability_zone = element(var.availability_zones, count.index)
   vpc_id            = aws_vpc.vpc.id
-  cidr_block        = "10.0.64.0/18"
-  availability_zone = "us-east-1a"
+  cidr_block        = cidrsubnet(aws_vpc.vpc.cidr_block, 2, count.index + 2)
   tags = {
-    Name = "private_subnet_1"
+    Name = "private_subnet_${count.index + 1}"
   }
 }
 
 # EIP for NAT gateway 
 resource "aws_eip" "eip_nat_gtw" {
+  count  = var.create_nat_gtw ? 1 : 0
   domain = "vpc"
 }
 
 # NAT gateway 
 resource "aws_nat_gateway" "nat_gtw" {
-  allocation_id = aws_eip.eip_nat_gtw.id
-  subnet_id     = aws_subnet.public_subnet_1.id
-  depends_on    = [aws_subnet.public_subnet_1]
+  count         = var.create_nat_gtw ? 1 : 0
+  allocation_id = aws_eip.eip_nat_gtw[0].id
+  subnet_id     = element(aws_subnet.public_subnets[*].id, 0)
+  depends_on    = [aws_subnet.public_subnets]
   tags = {
     Name = "nat_gtw"
   }
@@ -61,43 +79,46 @@ resource "aws_internet_gateway" "igw" {
 # private subnet route table
 resource "aws_route_table" "private_rtb" {
   vpc_id = aws_vpc.vpc.id
-
-  # network flow of private subnet to NAT gateway 
-  route {
-    cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.nat_gtw.id
-  }
-
   tags = {
     Name = "private_rtb"
   }
 }
 
-# private subnet association with private route table
-resource "aws_route_table_association" "private_subnet_private_rtb_assoc" {
+# network flow of private subnet to NAT gateway 
+resource "aws_route" "nat_gtw_route_private_rtb" {
+  count                  = var.create_nat_gtw ? 1 : 0
+  route_table_id         = aws_route_table.private_rtb.id
+  destination_cidr_block = "0.0.0.0/0"
+  nat_gateway_id         = aws_nat_gateway.nat_gtw[0].id
+}
+
+# private subnets association with private route table
+resource "aws_route_table_association" "private_subnets_private_rtb_assoc" {
   route_table_id = aws_route_table.private_rtb.id
-  subnet_id      = aws_subnet.private_subnet_1.id
+  count          = length(aws_subnet.private_subnets[*].id)
+  subnet_id      = element(aws_subnet.private_subnets[*].id, count.index)
 }
 
 # internet gateway route table
 resource "aws_route_table" "igw_rtb" {
   vpc_id = aws_vpc.vpc.id
-
-  # network traffic flow to internet gateway
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.igw.id
-  }
-
   tags = {
     Name = "igw_rtb"
   }
 }
 
-# public subnet association with internet gateway route table
-resource "aws_route_table_association" "public_subnet_igw_rtb_assoc" {
+# network traffic flow to internet gateway
+resource "aws_route" "internet_route_igw_rtb" {
+  route_table_id         = aws_route_table.igw_rtb.id
+  destination_cidr_block = "0.0.0.0/0"
+  gateway_id             = aws_internet_gateway.igw.id
+}
+
+# public subnets association with internet gateway route table
+resource "aws_route_table_association" "public_subnets_igw_rtb_assoc" {
   route_table_id = aws_route_table.igw_rtb.id
-  subnet_id      = aws_subnet.public_subnet_1.id
+  count          = length(aws_subnet.public_subnets[*].id)
+  subnet_id      = element(aws_subnet.public_subnets[*].id, count.index)
 }
 
 
@@ -136,19 +157,18 @@ resource "aws_vpc_security_group_egress_rule" "allows_outbound_traffic" {
   cidr_ipv4         = "0.0.0.0/0"
 }
 
-# public subnet ec2 instance
-resource "aws_instance" "public_ec2_1" {
+# public subnet ec2 instances, one in each public subnet
+resource "aws_instance" "public_nodejs_ec2" {
+  count           = var.create_instances ? length(aws_subnet.public_subnets[*].id) : 0
+  subnet_id       = element(aws_subnet.public_subnets[*].id, count.index)
   ami             = "ami-04e5276ebb8451442"
   instance_type   = "t2.micro"
-  subnet_id       = aws_subnet.public_subnet_1.id
   key_name        = "node-server-key-pair"
   security_groups = [aws_security_group.nodejs_ec2_sg.id]
-
+  user_data       = templatefile("nodejs-ec2-init-script.tpl", {})
   tags = {
-    Name = "public_ec2_1"
+    Name = "public_nodejs_ec2_${count.index + 1}"
   }
-
-  user_data = templatefile("nodejs-ec2-init-script.tpl", {})
 }
 
 resource "aws_security_group" "private_ec2_sg" {
@@ -171,15 +191,15 @@ resource "aws_vpc_security_group_egress_rule" "private_outbound" {
   ip_protocol       = "-1"
 }
 
-# private subnet ec2 instance
-resource "aws_instance" "private_ec2_1" {
+# private subnet ec2 instances, one in each private subnet
+resource "aws_instance" "private_ec2" {
+  count           = var.create_instances ? length(aws_subnet.private_subnets[*].id) : 0
+  subnet_id       = element(aws_subnet.private_subnets[*].id, count.index)
   ami             = "ami-04e5276ebb8451442"
   instance_type   = "t2.micro"
-  subnet_id       = aws_subnet.private_subnet_1.id
   key_name        = "node-server-key-pair"
   security_groups = [aws_security_group.private_ec2_sg.id]
-
   tags = {
-    Name = "private_ec2_1"
+    Name = "private_ec2_${count.index}"
   }
 }
