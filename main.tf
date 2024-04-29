@@ -1,4 +1,3 @@
-
 variable "create_instances" {
   type        = bool
   default     = false
@@ -15,7 +14,7 @@ variable "create_nat_gtw" {
 resource "aws_vpc" "vpc" {
   enable_dns_hostnames = true
   enable_dns_support   = true
-  cidr_block           = "10.0.0.0/17" // 32,768 IPs
+  cidr_block           = "10.0.0.0/24" // 256 IPs
   tags = {
     Name = "vpc"
   }
